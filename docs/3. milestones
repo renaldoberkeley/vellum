@@ -1,0 +1,292 @@
+
+
+I'd define **Milestone 1 as a dogfooding milestone**, not a traditional feature-complete MVP.
+
+The goal should be:
+
+> **Get MarkdownGPT to the point where we can use MarkdownGPT to continue designing MarkdownGPT.**
+
+That gives us a very concrete finish line.
+
+## Milestone 1 — AI Project Workspace
+
+### Goal
+
+A user can create a project containing multiple Markdown documents, talk to AI about the project, and have the AI use those documents as context.
+
+For example, once Milestone 1 is finished, you should be able to put these into MarkdownGPT:
+
+```text
+Vellum
+
+vision.md
+product-requirements.md
+technical-architecture.md
+```
+
+Then ask:
+
+> Based on the vision and product requirements, what should we put in technical-architecture.md?
+
+MarkdownGPT should understand the existing documents and answer accordingly.
+
+Or:
+
+> Does anything in product-requirements.md conflict with vision.md?
+
+That gives us the foundation for the more sophisticated multi-document editing later.
+
+---
+
+## What I would build
+
+**1. Projects**
+
+A basic dashboard:
+
+```text
+My Projects
+
+┌─────────────────────────────┐
+│ Vellum                      │
+│ 3 documents                 │
+│ Updated 4 minutes ago       │
+└─────────────────────────────┘
+
+               + New Project
+```
+
+**2. Project workspace**
+
+Something roughly like:
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Vellum                                            Renaldo ▾  │
+├────────────────┬─────────────────────────┬───────────────────┤
+│ DOCUMENTS      │                         │ AI                │
+│                │ Product Requirements    │                   │
+│ vision.md      │                         │ Ask anything      │
+│ product-...md  │ # Product Requirements  │ about this        │
+│ architecture   │                         │ project...        │
+│                │ MarkdownGPT is an...    │                   │
+│ + Document     │                         │                   │
+│                │                         │                   │
+│                │                         │                   │
+└────────────────┴─────────────────────────┴───────────────────┘
+```
+
+This three-panel interface could become one of the defining pieces of MarkdownGPT:
+
+**Documents | Editor | AI**
+
+**3. Markdown editor**
+
+For Milestone 1, don't build a Word competitor.
+
+We need:
+
+- Markdown editing
+- Rendered Markdown
+- Autosave
+- Document title
+- Create/delete documents
+
+That's enough.
+
+**4. Import Markdown**
+
+This matters immediately because you already have existing documentation.
+
+You should be able to drag:
+
+```text
+vision.md
+product-requirements.md
+```
+
+into the Vellum project.
+
+**5. Project AI**
+
+This is the important piece.
+
+Instead of:
+
+```text
+LLM ← current document
+```
+
+we want:
+
+```text
+                User question
+                     │
+                     ▼
+              Context retrieval
+                     │
+          ┌──────────┴──────────┐
+          ▼                     ▼
+   Current document      Project documents
+          │                     │
+          └──────────┬──────────┘
+                     ▼
+                    LLM
+                     │
+                     ▼
+                  Answer
+```
+
+For the first implementation, **don't even overengineer RAG**.
+
+You currently have three small documents. Their entire contents may comfortably fit in the model context.
+
+We can initially send:
+
+```text
+SYSTEM
+You are assisting with the Vellum project.
+
+PROJECT DOCUMENTS
+
+--- vision.md ---
+...
+
+--- product-requirements.md ---
+...
+
+--- technical-architecture.md ---
+...
+
+USER
+Does our technical architecture satisfy our product requirements?
+```
+
+Later, when projects become large, retrieval replaces the “send everything” approach.
+
+That's why I wouldn't let pgvector delay Milestone 1.
+
+**6. Basic AI document generation**
+
+This is the first dogfooding superpower.
+
+You could tell MarkdownGPT:
+
+> Create `technical-architecture.md` based on `vision.md` and `product-requirements.md`.
+
+It proposes the document.
+
+You review it.
+
+Then:
+
+**Create Document**
+
+And MarkdownGPT saves it.
+
+At that point, something pretty cool has happened:
+
+**MarkdownGPT helped create MarkdownGPT.**
+
+---
+
+# What Milestone 1 should NOT include
+
+This is equally important.
+
+Don't build yet:
+
+```text
+❌ Multi-document automatic updates
+❌ Vector embeddings
+❌ pgvector
+❌ Elasticsearch
+❌ GitHub synchronization
+❌ PDF/DOCX
+❌ Teams
+❌ Collaboration
+❌ Billing
+❌ Mobile
+❌ Complex permissions
+❌ Decision records
+❌ Automatic contradiction scanning
+❌ Agent workflows
+```
+
+Those are good ideas, but none are necessary to prove the first layer.
+
+---
+
+## Milestone 2 becomes the killer feature
+
+Once Milestone 1 works, we build what originally motivated the product:
+
+### Project Change Intelligence
+
+You say:
+
+> We decided to use PostgreSQL rather than MongoDB.
+
+MarkdownGPT searches the project:
+
+```text
+Potentially affected documents
+
+technical-architecture.md     HIGH
+product-requirements.md       LOW
+deployment.md                 MEDIUM
+vision.md                     NONE
+```
+
+Then:
+
+> **3 changes proposed**
+
+And you get diffs.
+
+That's when MarkdownGPT starts becoming something substantially different from ChatGPT + a Markdown editor.
+
+---
+
+## Milestone 3
+
+Then I'd introduce:
+
+**Project Intelligence**
+
+Semantic search, embeddings, decisions, contradiction detection, outdated-information detection, terminology consistency, document relationships, etc.
+
+So the roadmap becomes very clean:
+
+```text
+M1
+AI Project Workspace
+        ↓
+M2
+Project Change Intelligence
+        ↓
+M3
+Project Knowledge Intelligence
+        ↓
+M4
+Integrations / Collaboration
+```
+
+And now we're finally in a good position to write `technical-architecture.md`.
+
+Because instead of trying to architect some hypothetical finished MarkdownGPT, we can design an architecture that gets **M1 running quickly without boxing us out of M2/M3**.
+
+For the stack, I'm already leaning toward the same pattern you were considering earlier:
+
+```text
+Next.js
+   │
+FastAPI
+   │
+PostgreSQL
+   │
+LLM provider abstraction
+```
+
+with S3-compatible object storage added when we actually need binary uploads/exports, and vector search added when M2/M3 makes it necessary.
+

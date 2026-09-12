@@ -33,3 +33,6 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# Local user artifacts
+renaldow/

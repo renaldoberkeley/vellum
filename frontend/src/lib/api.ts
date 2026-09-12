@@ -1,4 +1,11 @@
-import type { Document, DocumentVersion, DocumentVersionListItem, Project } from "@/lib/types";
+import type {
+  Document,
+  DocumentVersion,
+  DocumentVersionListItem,
+  MarkdownImportResponse,
+  Project,
+  ProjectSearchResult,
+} from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -123,4 +130,59 @@ export async function restoreDocumentVersion(
     { method: "POST" },
   );
   return parseResponse<Document>(response);
+}
+
+export async function importMarkdownDocuments(
+  projectId: number,
+  files: File[],
+): Promise<MarkdownImportResponse> {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append("files", file);
+  }
+
+  const response = await fetch(`${API_BASE}/api/projects/${projectId}/import/markdown`, {
+    method: "POST",
+    body: formData,
+  });
+  return parseResponse<MarkdownImportResponse>(response);
+}
+
+export async function searchProjectDocuments(
+  projectId: number,
+  query: string,
+): Promise<ProjectSearchResult[]> {
+  const params = new URLSearchParams({ q: query });
+  const response = await fetch(`${API_BASE}/api/projects/${projectId}/search?${params.toString()}`, {
+    cache: "no-store",
+  });
+  return parseResponse<ProjectSearchResult[]>(response);
+}
+
+export async function downloadDocumentMarkdown(
+  projectId: number,
+  documentId: number,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(
+    `${API_BASE}/api/projects/${projectId}/documents/${documentId}/export/markdown`,
+  );
+
+  if (!response.ok) {
+    const fallback = `Request failed with status ${response.status}`;
+    let message = fallback;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      message = payload.detail ?? fallback;
+    } catch {
+      message = fallback;
+    }
+    throw new Error(message);
+  }
+
+  const contentDisposition = response.headers.get("content-disposition") ?? "";
+  const filenameMatch = /filename="?([^";]+)"?/i.exec(contentDisposition);
+  const filename = filenameMatch?.[1] ?? "document.md";
+  const blob = await response.blob();
+
+  return { blob, filename };
 }

@@ -31,3 +31,24 @@ export type DocumentVersion = DocumentVersionListItem & {
   filename: string;
   markdown_content: string;
 };
+
+export type MarkdownImportFailure = {
+  filename: string;
+  detail: string;
+  code: string;
+};
+
+export type MarkdownImportResponse = {
+  imported: Document[];
+  failures: MarkdownImportFailure[];
+  imported_count: number;
+  failed_count: number;
+};
+
+export type ProjectSearchResult = {
+  document_id: number;
+  title: string;
+  filename: string;
+  snippet: string;
+  relevance: number;
+};

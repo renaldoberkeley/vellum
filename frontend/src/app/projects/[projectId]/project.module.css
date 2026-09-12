@@ -48,6 +48,10 @@
   cursor: pointer;
 }
 
+.hiddenInput {
+  display: none;
+}
+
 .sidebar .active {
   border-color: #1d4ed8;
   background: #eff6ff;
@@ -167,6 +171,78 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.importFailures {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.importFailures h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.importFailures ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.importFailures li {
+  font-size: 0.82rem;
+  color: #b91c1c;
+}
+
+.searchPanel {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.searchPanel h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.searchForm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.searchForm input,
+.searchForm button {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+}
+
+.searchResults {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.searchResults li button {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.searchResults li span {
+  font-size: 0.82rem;
+  color: #4b5563;
 }
 
 .currentVersion {

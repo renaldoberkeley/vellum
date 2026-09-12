@@ -3,18 +3,29 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createDocument,
+  downloadDocumentMarkdown,
+  getDocument,
   getDocumentVersion,
   getProject,
+  importMarkdownDocuments,
   listDocuments,
   listDocumentVersions,
   restoreDocumentVersion,
+  searchProjectDocuments,
   updateDocument,
 } from "@/lib/api";
-import type { Document, DocumentVersion, DocumentVersionListItem, Project } from "@/lib/types";
+import type {
+  Document,
+  DocumentVersion,
+  DocumentVersionListItem,
+  MarkdownImportFailure,
+  Project,
+  ProjectSearchResult,
+} from "@/lib/types";
 
 import styles from "./project.module.css";
 
@@ -30,8 +41,13 @@ export default function ProjectPage() {
   const [versionHistory, setVersionHistory] = useState<DocumentVersionListItem[]>([]);
   const [inspectedVersion, setInspectedVersion] = useState<DocumentVersion | null>(null);
   const [loadingVersions, setLoadingVersions] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<ProjectSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [importFailures, setImportFailures] = useState<MarkdownImportFailure[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedDocument = useMemo(
     () => documents.find((document) => document.id === selectedDocumentId) ?? null,
@@ -62,6 +78,7 @@ export default function ProjectPage() {
       setMarkdownContent(document.markdown_content);
       setInspectedVersion(null);
       setMessage(null);
+      setImportFailures([]);
       void loadVersionHistory(document.id).catch((err: unknown) => {
         setError(err instanceof Error ? err.message : "Failed to load version history");
       });
@@ -117,6 +134,32 @@ export default function ProjectPage() {
       onSelectDocument(created);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create document");
+    }
+  }
+
+  async function onImportMarkdownFiles(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    if (Number.isNaN(projectId)) {
+      return;
+    }
+
+    const selectedFiles = event.target.files;
+    if (!selectedFiles || selectedFiles.length === 0) {
+      return;
+    }
+
+    const files = Array.from(selectedFiles);
+    event.target.value = "";
+
+    try {
+      setError(null);
+      setMessage(null);
+      setImportFailures([]);
+      const result = await importMarkdownDocuments(projectId, files);
+      await refreshData(projectId);
+      setImportFailures(result.failures);
+      setMessage(`Imported ${result.imported_count} file(s); ${result.failed_count} failed.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to import markdown files");
     }
   }
 
@@ -182,6 +225,77 @@ export default function ProjectPage() {
     }
   }
 
+  async function onDownloadSelectedDocument(): Promise<void> {
+    if (Number.isNaN(projectId) || selectedDocumentId === null) {
+      return;
+    }
+
+    try {
+      setError(null);
+      const { blob, filename: downloadFilename } = await downloadDocumentMarkdown(projectId, selectedDocumentId);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = downloadFilename;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to download markdown file");
+    }
+  }
+
+  async function onSearchProject(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (Number.isNaN(projectId)) {
+      return;
+    }
+
+    const query = searchQuery.trim();
+    if (!query) {
+      setError("Search query cannot be empty");
+      return;
+    }
+
+    try {
+      setError(null);
+      setSearching(true);
+      const results = await searchProjectDocuments(projectId, query);
+      setSearchResults(results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to search project documents");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function onOpenSearchResult(result: ProjectSearchResult): Promise<void> {
+    if (Number.isNaN(projectId)) {
+      return;
+    }
+
+    const existingDocument = documents.find((document) => document.id === result.document_id);
+    if (existingDocument) {
+      onSelectDocument(existingDocument);
+      return;
+    }
+
+    try {
+      setError(null);
+      const loadedDocument = await getDocument(projectId, result.document_id);
+      setDocuments((prev) => {
+        if (prev.some((document) => document.id === loadedDocument.id)) {
+          return prev;
+        }
+        return [loadedDocument, ...prev];
+      });
+      onSelectDocument(loadedDocument);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to open search result");
+    }
+  }
+
   return (
     <main className={styles.page}>
       <header className={styles.header}>
@@ -197,6 +311,17 @@ export default function ProjectPage() {
           <form onSubmit={(event) => void onCreateDocument(event)}>
             <button type="submit">New document</button>
           </form>
+          <button type="button" onClick={() => importInputRef.current?.click()}>
+            Import Markdown
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".md,.markdown,text/markdown"
+            multiple
+            className={styles.hiddenInput}
+            onChange={(event) => void onImportMarkdownFiles(event)}
+          />
 
           <ul>
             {documents.map((document) => (
@@ -211,6 +336,45 @@ export default function ProjectPage() {
               </li>
             ))}
           </ul>
+
+          {importFailures.length > 0 ? (
+            <section className={styles.importFailures}>
+              <h3>Import Failures</h3>
+              <ul>
+                {importFailures.map((failure) => (
+                  <li key={`${failure.filename}-${failure.code}`}>
+                    <strong>{failure.filename}</strong>: {failure.detail}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          <section className={styles.searchPanel}>
+            <h3>Project Search</h3>
+            <form onSubmit={(event) => void onSearchProject(event)} className={styles.searchForm}>
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search title, filename, or content"
+              />
+              <button type="submit" disabled={searching}>
+                {searching ? "Searching..." : "Search"}
+              </button>
+            </form>
+            {searchResults.length > 0 ? (
+              <ul className={styles.searchResults}>
+                {searchResults.map((result) => (
+                  <li key={`${result.document_id}-${result.filename}-${result.relevance}`}>
+                    <button type="button" onClick={() => void onOpenSearchResult(result)}>
+                      <strong>{result.filename}</strong>
+                      <span>{result.snippet}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </section>
 
           {selectedDocument ? (
             <section className={styles.versionsPanel}>
@@ -271,6 +435,9 @@ export default function ProjectPage() {
                 </div>
               </div>
               <button type="submit">Save</button>
+              <button type="button" onClick={() => void onDownloadSelectedDocument()}>
+                Download Markdown
+              </button>
             </form>
           ) : (
             <p>Create or select a document to begin editing.</p>

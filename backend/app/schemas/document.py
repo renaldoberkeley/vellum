@@ -23,5 +23,6 @@ class DocumentRead(BaseModel):
     title: str
     filename: str
     markdown_content: str
+    current_version: int
     created_at: datetime
     updated_at: datetime

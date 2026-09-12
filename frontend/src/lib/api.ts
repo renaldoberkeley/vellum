@@ -1,4 +1,4 @@
-import type { Document, Project } from "@/lib/types";
+import type { Document, DocumentVersion, DocumentVersionListItem, Project } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -88,4 +88,39 @@ export async function deleteDocument(projectId: number, documentId: number): Pro
     method: "DELETE",
   });
   return parseResponse<void>(response);
+}
+
+export async function listDocumentVersions(
+  projectId: number,
+  documentId: number,
+): Promise<DocumentVersionListItem[]> {
+  const response = await fetch(
+    `${API_BASE}/api/projects/${projectId}/documents/${documentId}/versions`,
+    { cache: "no-store" },
+  );
+  return parseResponse<DocumentVersionListItem[]>(response);
+}
+
+export async function getDocumentVersion(
+  projectId: number,
+  documentId: number,
+  versionId: number,
+): Promise<DocumentVersion> {
+  const response = await fetch(
+    `${API_BASE}/api/projects/${projectId}/documents/${documentId}/versions/${versionId}`,
+    { cache: "no-store" },
+  );
+  return parseResponse<DocumentVersion>(response);
+}
+
+export async function restoreDocumentVersion(
+  projectId: number,
+  documentId: number,
+  versionId: number,
+): Promise<Document> {
+  const response = await fetch(
+    `${API_BASE}/api/projects/${projectId}/documents/${documentId}/versions/${versionId}/restore`,
+    { method: "POST" },
+  );
+  return parseResponse<Document>(response);
 }

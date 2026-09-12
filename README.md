@@ -1,6 +1,6 @@
-# Vellum (MarkdownGPT)
+# Vellum
 
-Phase 0 foundation and scaffolding only.
+Experimental document workspace.
 
 ## Repository Structure
 

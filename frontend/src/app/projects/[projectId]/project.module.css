@@ -1,0 +1,167 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header a {
+  color: #1d4ed8;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 16px;
+  min-height: 70vh;
+}
+
+.sidebar {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sidebar button {
+  width: 100%;
+  text-align: left;
+  padding: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.sidebar .active {
+  border-color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.editor {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.editorForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.editorGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.editorPane,
+.previewPane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editorPane h3,
+.previewPane h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.editorForm input,
+.editorForm textarea,
+.editorForm button {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+}
+
+.editorForm textarea {
+  resize: vertical;
+  min-height: 420px;
+}
+
+.markdownPreview {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 10px;
+  min-height: 420px;
+  background: #fff;
+  overflow: auto;
+}
+
+.markdownPreview h1,
+.markdownPreview h2,
+.markdownPreview h3,
+.markdownPreview h4 {
+  margin: 0.75rem 0 0.35rem;
+}
+
+.markdownPreview p,
+.markdownPreview ul,
+.markdownPreview ol,
+.markdownPreview pre,
+.markdownPreview blockquote {
+  margin: 0.45rem 0;
+}
+
+.markdownPreview ul,
+.markdownPreview ol {
+  padding-left: 1.25rem;
+}
+
+.markdownPreview a {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.markdownPreview code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: #f3f4f6;
+  border-radius: 4px;
+  padding: 0.12rem 0.35rem;
+}
+
+.markdownPreview pre code {
+  display: block;
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+
+.editorForm button {
+  width: fit-content;
+  background: #111827;
+  border-color: #111827;
+  color: #fff;
+}
+
+.error {
+  color: #b91c1c;
+}
+
+@media (max-width: 900px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .editorGrid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -52,3 +52,19 @@ export type ProjectSearchResult = {
   snippet: string;
   relevance: number;
 };
+
+export type Conversation = {
+  id: number;
+  project_id: number;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChatMessage = {
+  id: number;
+  conversation_id: number;
+  role: string;
+  content: string;
+  created_at: string;
+};

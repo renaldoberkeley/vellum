@@ -6,19 +6,25 @@ import ReactMarkdown from "react-markdown";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  createProjectConversation,
   createDocument,
   downloadDocumentMarkdown,
   getDocument,
   getDocumentVersion,
   getProject,
   importMarkdownDocuments,
+  listConversationMessages,
   listDocuments,
   listDocumentVersions,
+  listProjectConversations,
   restoreDocumentVersion,
   searchProjectDocuments,
+  streamConversationMessage,
   updateDocument,
 } from "@/lib/api";
 import type {
+  ChatMessage,
+  Conversation,
   Document,
   DocumentVersion,
   DocumentVersionListItem,
@@ -45,6 +51,12 @@ export default function ProjectPage() {
   const [searchResults, setSearchResults] = useState<ProjectSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [importFailures, setImportFailures] = useState<MarkdownImportFailure[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatStreaming, setChatStreaming] = useState(false);
+  const [chatMeta, setChatMeta] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -52,6 +64,11 @@ export default function ProjectPage() {
   const selectedDocument = useMemo(
     () => documents.find((document) => document.id === selectedDocumentId) ?? null,
     [documents, selectedDocumentId],
+  );
+
+  const activeConversation = useMemo(
+    () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
+    [conversations, activeConversationId],
   );
 
   const loadVersionHistory = useCallback(
@@ -100,6 +117,30 @@ export default function ProjectPage() {
     }
   }, [onSelectDocument, selectedDocumentId]);
 
+  const refreshConversationMessages = useCallback(
+    async (targetProjectId: number, conversationId: number): Promise<void> => {
+      const messages = await listConversationMessages(targetProjectId, conversationId);
+      setChatMessages(messages);
+    },
+    [],
+  );
+
+  const ensureProjectConversation = useCallback(async (targetProjectId: number): Promise<number> => {
+    const existing = await listProjectConversations(targetProjectId);
+    if (existing.length > 0) {
+      setConversations(existing);
+      setActiveConversationId(existing[0].id);
+      await refreshConversationMessages(targetProjectId, existing[0].id);
+      return existing[0].id;
+    }
+
+    const created = await createProjectConversation(targetProjectId, {});
+    setConversations([created]);
+    setActiveConversationId(created.id);
+    await refreshConversationMessages(targetProjectId, created.id);
+    return created.id;
+  }, [refreshConversationMessages]);
+
   useEffect(() => {
     if (Number.isNaN(projectId)) {
       return;
@@ -108,12 +149,13 @@ export default function ProjectPage() {
     void (async () => {
       try {
         setError(null);
-        await refreshData(projectId);
+        setChatMeta(null);
+        await Promise.all([refreshData(projectId), ensureProjectConversation(projectId)]);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load project");
       }
     })();
-  }, [projectId, refreshData]);
+  }, [ensureProjectConversation, projectId, refreshData]);
 
   async function onCreateDocument(event: React.FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -267,6 +309,93 @@ export default function ProjectPage() {
       setError(err instanceof Error ? err.message : "Failed to search project documents");
     } finally {
       setSearching(false);
+    }
+  }
+
+  async function onSendChatMessage(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (Number.isNaN(projectId)) {
+      return;
+    }
+
+    const content = chatInput.trim();
+    if (!content) {
+      return;
+    }
+
+    try {
+      let conversationId = activeConversationId;
+      if (conversationId === null) {
+        conversationId = await ensureProjectConversation(projectId);
+      }
+      if (conversationId === null) {
+        throw new Error("No conversation available");
+      }
+
+      const tempUserId = -Date.now();
+      const tempAssistantId = tempUserId - 1;
+
+      setError(null);
+      setChatStreaming(true);
+      setChatMeta(null);
+      setChatInput("");
+
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: tempUserId,
+          conversation_id: conversationId,
+          role: "user",
+          content,
+          created_at: new Date().toISOString(),
+        },
+        {
+          id: tempAssistantId,
+          conversation_id: conversationId,
+          role: "assistant",
+          content: "",
+          created_at: new Date().toISOString(),
+        },
+      ]);
+
+      await streamConversationMessage(
+        projectId,
+        conversationId,
+        { content, selected_document_id: selectedDocumentId },
+        {
+          onChunk: (chunk) => {
+            setChatMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === tempAssistantId
+                  ? {
+                      ...msg,
+                      content: `${msg.content}${chunk}`,
+                    }
+                  : msg,
+              ),
+            );
+          },
+          onDone: (meta) => {
+            if (meta.used_document_ids && meta.used_document_ids.length > 0) {
+              setChatMeta(
+                `Context docs: ${meta.used_document_ids.join(", ")}${meta.truncated ? " (truncated)" : ""}`,
+              );
+            } else if (meta.truncated) {
+              setChatMeta("Context was truncated to fit model budget.");
+            }
+          },
+        },
+      );
+      await refreshConversationMessages(projectId, conversationId);
+      const refreshedConversations = await listProjectConversations(projectId);
+      setConversations(refreshedConversations);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to send chat message");
+      if (activeConversationId !== null) {
+        await refreshConversationMessages(projectId, activeConversationId);
+      }
+    } finally {
+      setChatStreaming(false);
     }
   }
 
@@ -455,6 +584,43 @@ export default function ProjectPage() {
             </section>
           ) : null}
         </section>
+
+        <aside className={styles.chatPanel}>
+          <div className={styles.chatHeader}>
+            <h3>Project Chat</h3>
+            <p>{activeConversation?.title ?? "General conversation"}</p>
+          </div>
+
+          <div className={styles.chatHistory}>
+            {chatMessages.length === 0 ? <p>No messages yet. Ask about this project.</p> : null}
+            {chatMessages.map((chatMessage) => (
+              <article
+                key={chatMessage.id}
+                className={`${styles.chatMessage} ${
+                  chatMessage.role === "user" ? styles.chatUserMessage : styles.chatAssistantMessage
+                }`}
+              >
+                <header>{chatMessage.role === "user" ? "You" : "Assistant"}</header>
+                <p>{chatMessage.content || (chatMessage.role === "assistant" ? "..." : "")}</p>
+              </article>
+            ))}
+          </div>
+
+          <form onSubmit={(event) => void onSendChatMessage(event)} className={styles.chatForm}>
+            <textarea
+              value={chatInput}
+              onChange={(event) => setChatInput(event.target.value)}
+              rows={4}
+              placeholder="Ask a question about this project"
+              disabled={chatStreaming}
+            />
+            <button type="submit" disabled={chatStreaming || !chatInput.trim()}>
+              {chatStreaming ? "Thinking..." : "Send"}
+            </button>
+          </form>
+
+          {chatMeta ? <p className={styles.chatMeta}>{chatMeta}</p> : null}
+        </aside>
       </section>
     </main>
   );

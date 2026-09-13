@@ -1,4 +1,6 @@
 import type {
+  ChatMessage,
+  Conversation,
   Document,
   DocumentVersion,
   DocumentVersionListItem,
@@ -185,4 +187,118 @@ export async function downloadDocumentMarkdown(
   const blob = await response.blob();
 
   return { blob, filename };
+}
+
+export async function listProjectConversations(projectId: number): Promise<Conversation[]> {
+  const response = await fetch(`${API_BASE}/api/projects/${projectId}/conversations`, {
+    cache: "no-store",
+  });
+  return parseResponse<Conversation[]>(response);
+}
+
+export async function createProjectConversation(
+  projectId: number,
+  input: { title?: string | null } = {},
+): Promise<Conversation> {
+  const response = await fetch(`${API_BASE}/api/projects/${projectId}/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parseResponse<Conversation>(response);
+}
+
+export async function listConversationMessages(
+  projectId: number,
+  conversationId: number,
+): Promise<ChatMessage[]> {
+  const response = await fetch(
+    `${API_BASE}/api/projects/${projectId}/conversations/${conversationId}/messages`,
+    { cache: "no-store" },
+  );
+  return parseResponse<ChatMessage[]>(response);
+}
+
+type StreamHandlers = {
+  onChunk: (chunk: string) => void;
+  onDone?: (meta: { used_document_ids?: number[]; truncated?: boolean }) => void;
+};
+
+export async function streamConversationMessage(
+  projectId: number,
+  conversationId: number,
+  input: { content: string; selected_document_id?: number | null },
+  handlers: StreamHandlers,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/api/projects/${projectId}/conversations/${conversationId}/messages`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+
+  if (!response.ok) {
+    const fallback = `Request failed with status ${response.status}`;
+    let message = fallback;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      message = payload.detail ?? fallback;
+    } catch {
+      message = fallback;
+    }
+    throw new Error(message);
+  }
+
+  if (!response.body) {
+    throw new Error("No streaming response body available");
+  }
+
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+
+    for (const event of events) {
+      const dataLine = event
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.startsWith("data:"));
+      if (!dataLine) {
+        continue;
+      }
+
+      const payload = JSON.parse(dataLine.slice(5).trim()) as {
+        type?: string;
+        content?: string;
+        detail?: string;
+        used_document_ids?: number[];
+        truncated?: boolean;
+      };
+
+      if (payload.type === "chunk" && payload.content) {
+        handlers.onChunk(payload.content);
+      }
+      if (payload.type === "error") {
+        throw new Error(payload.detail ?? "Streaming failed");
+      }
+      if (payload.type === "done") {
+        handlers.onDone?.({
+          used_document_ids: payload.used_document_ids,
+          truncated: payload.truncated,
+        });
+      }
+    }
+  }
 }

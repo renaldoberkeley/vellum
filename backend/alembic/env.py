@@ -5,13 +5,13 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from app.core.config import get_settings
+from app.core.config import get_database_url, get_settings
 from app.db.base import Base
 from app.models import conversation, document, document_version, message, project  # noqa: F401
 
 config = context.config
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", get_database_url(settings))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

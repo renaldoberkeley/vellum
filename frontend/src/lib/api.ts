@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  ContextDocumentDiagnostic,
   Conversation,
   Document,
   DocumentVersion,
@@ -221,23 +222,24 @@ export async function listConversationMessages(
 
 type StreamHandlers = {
   onChunk: (chunk: string) => void;
-  onDone?: (meta: { used_document_ids?: number[]; used_document_filenames?: string[]; truncated?: boolean }) => void;
+  onDone?: (meta: StreamDoneMeta) => void;
 };
 
-export async function streamConversationMessage(
-  projectId: number,
-  conversationId: number,
-  input: { content: string; selected_document_id?: number | null },
+type StreamDoneMeta = {
+  title?: string;
+  filename?: string;
+  used_document_ids?: number[];
+  used_document_filenames?: string[];
+  context_documents?: ContextDocumentDiagnostic[];
+  truncated?: boolean;
+};
+
+async function streamSseRequest(
+  input: RequestInfo | URL,
+  init: RequestInit,
   handlers: StreamHandlers,
 ): Promise<void> {
-  const response = await fetch(
-    `${API_BASE}/api/projects/${projectId}/conversations/${conversationId}/messages`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    },
-  );
+  const response = await fetch(input, init);
 
   if (!response.ok) {
     const fallback = `Request failed with status ${response.status}`;
@@ -283,8 +285,11 @@ export async function streamConversationMessage(
         type?: string;
         content?: string;
         detail?: string;
+        title?: string;
+        filename?: string;
         used_document_ids?: number[];
         used_document_filenames?: string[];
+        context_documents?: ContextDocumentDiagnostic[];
         truncated?: boolean;
       };
 
@@ -296,11 +301,64 @@ export async function streamConversationMessage(
       }
       if (payload.type === "done") {
         handlers.onDone?.({
+          title: payload.title,
+          filename: payload.filename,
           used_document_ids: payload.used_document_ids,
           used_document_filenames: payload.used_document_filenames,
+          context_documents: payload.context_documents,
           truncated: payload.truncated,
         });
       }
     }
   }
+}
+
+export async function streamConversationMessage(
+  projectId: number,
+  conversationId: number,
+  input: { content: string; selected_document_id?: number | null },
+  handlers: StreamHandlers,
+): Promise<void> {
+  await streamSseRequest(
+    `${API_BASE}/api/projects/${projectId}/conversations/${conversationId}/messages`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+    handlers,
+  );
+}
+
+export async function streamGenerateDocumentProposal(
+  projectId: number,
+  input: {
+    instruction: string;
+    filename?: string;
+    title?: string;
+    selected_document_id?: number | null;
+  },
+  handlers: StreamHandlers,
+): Promise<void> {
+  await streamSseRequest(
+    `${API_BASE}/api/projects/${projectId}/ai/generate-document`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+    handlers,
+  );
+}
+
+export async function acceptGeneratedDocumentProposal(
+  projectId: number,
+  input: { title: string; filename: string; markdown_content: string },
+): Promise<Document> {
+  const response = await fetch(`${API_BASE}/api/projects/${projectId}/ai/generated-document/accept`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parseResponse<Document>(response);
 }

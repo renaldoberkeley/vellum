@@ -300,6 +300,136 @@
   gap: 10px;
 }
 
+.generationPanel {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.generationPanel h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.generationForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.generationForm textarea,
+.generationForm input,
+.generationForm button {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 9px;
+  font: inherit;
+}
+
+.generationForm button {
+  width: fit-content;
+  background: #111827;
+  color: #fff;
+  border-color: #111827;
+}
+
+.generationHintToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #374151;
+}
+
+.generationHintToggle input {
+  width: auto;
+}
+
+.generatedDraft {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.generatedBadge {
+  display: inline-block;
+  width: fit-content;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.generatedDraft label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.generatedDraft label input {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+}
+
+.generatedDraftGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.generatedEditorPane,
+.generatedPreviewPane {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.generatedEditorPane h4,
+.generatedPreviewPane h4 {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.generatedEditorPane textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+  resize: vertical;
+  min-height: 180px;
+}
+
+.generatedActions {
+  display: flex;
+  gap: 8px;
+}
+
+.generatedActions button {
+  border: 1px solid #111827;
+  border-radius: 8px;
+  background: #111827;
+  color: #fff;
+  padding: 8px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.generatedActions button:last-child {
+  background: #fff;
+  color: #111827;
+}
+
 .chatHeader {
   display: flex;
   flex-direction: column;
@@ -392,6 +522,10 @@
   }
 
   .editorGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .generatedDraftGrid {
     grid-template-columns: 1fr;
   }
 }

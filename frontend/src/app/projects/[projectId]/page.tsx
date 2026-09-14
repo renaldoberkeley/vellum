@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  acceptGeneratedDocumentProposal,
   createProjectConversation,
   createDocument,
   downloadDocumentMarkdown,
@@ -19,15 +20,18 @@ import {
   listProjectConversations,
   restoreDocumentVersion,
   searchProjectDocuments,
+  streamGenerateDocumentProposal,
   streamConversationMessage,
   updateDocument,
 } from "@/lib/api";
 import type {
   ChatMessage,
+  ContextDocumentDiagnostic,
   Conversation,
   Document,
   DocumentVersion,
   DocumentVersionListItem,
+  GeneratedDocumentProposal,
   MarkdownImportFailure,
   Project,
   ProjectSearchResult,
@@ -57,6 +61,12 @@ export default function ProjectPage() {
   const [chatInput, setChatInput] = useState("");
   const [chatStreaming, setChatStreaming] = useState(false);
   const [chatMeta, setChatMeta] = useState<string | null>(null);
+  const [generationInstruction, setGenerationInstruction] = useState("");
+  const [generationTitle, setGenerationTitle] = useState("");
+  const [generationFilename, setGenerationFilename] = useState("");
+  const [generationUseSelectedHint, setGenerationUseSelectedHint] = useState(false);
+  const [generationStreaming, setGenerationStreaming] = useState(false);
+  const [generatedProposal, setGeneratedProposal] = useState<GeneratedDocumentProposal | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -70,6 +80,19 @@ export default function ProjectPage() {
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [conversations, activeConversationId],
   );
+
+  const generationMeta = useMemo(() => {
+    if (!generatedProposal) {
+      return null;
+    }
+
+    return formatContextDiagnostics({
+      used_document_ids: generatedProposal.used_document_ids,
+      used_document_filenames: generatedProposal.used_document_filenames,
+      context_documents: generatedProposal.context_documents,
+      truncated: generatedProposal.truncated,
+    });
+  }, [generatedProposal]);
 
   const loadVersionHistory = useCallback(
     async (targetDocumentId: number): Promise<void> => {
@@ -376,21 +399,7 @@ export default function ProjectPage() {
             );
           },
           onDone: (meta) => {
-            if (meta.used_document_filenames && meta.used_document_filenames.length > 0) {
-              const lines = ["Context docs:", ...meta.used_document_filenames];
-              if (meta.truncated) {
-                lines.push("(truncated)");
-              }
-              setChatMeta(lines.join("\n"));
-            } else if (meta.used_document_ids && meta.used_document_ids.length > 0) {
-              const lines = ["Context docs:", ...meta.used_document_ids.map((id) => String(id))];
-              if (meta.truncated) {
-                lines.push("(truncated)");
-              }
-              setChatMeta(lines.join("\n"));
-            } else if (meta.truncated) {
-              setChatMeta("Context was truncated to fit model budget.");
-            }
+            setChatMeta(formatContextDiagnostics(meta));
           },
         },
       );
@@ -405,6 +414,106 @@ export default function ProjectPage() {
     } finally {
       setChatStreaming(false);
     }
+  }
+
+  async function onGenerateDocumentProposal(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (Number.isNaN(projectId)) {
+      return;
+    }
+
+    const instruction = generationInstruction.trim();
+    if (!instruction) {
+      setError("Generation instruction cannot be empty");
+      return;
+    }
+
+    try {
+      setError(null);
+      setMessage(null);
+      setGenerationStreaming(true);
+
+      setGeneratedProposal({
+        title: generationTitle.trim() || "Generated Document",
+        filename: generationFilename.trim() || "generated-document.md",
+        markdown_content: "",
+        used_document_ids: [],
+        used_document_filenames: [],
+        context_documents: [],
+        truncated: false,
+      });
+
+      await streamGenerateDocumentProposal(
+        projectId,
+        {
+          instruction,
+          title: generationTitle.trim() || undefined,
+          filename: generationFilename.trim() || undefined,
+          selected_document_id: generationUseSelectedHint ? selectedDocumentId : null,
+        },
+        {
+          onChunk: (chunk) => {
+            setGeneratedProposal((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    markdown_content: `${prev.markdown_content}${chunk}`,
+                  }
+                : prev,
+            );
+          },
+          onDone: (meta) => {
+            setGeneratedProposal((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    title: meta.title ?? prev.title,
+                    filename: meta.filename ?? prev.filename,
+                    used_document_ids: meta.used_document_ids ?? [],
+                    used_document_filenames: meta.used_document_filenames ?? [],
+                    context_documents: meta.context_documents ?? [],
+                    truncated: Boolean(meta.truncated),
+                  }
+                : prev,
+            );
+          },
+        },
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate proposal");
+      setGeneratedProposal(null);
+    } finally {
+      setGenerationStreaming(false);
+    }
+  }
+
+  async function onAcceptGeneratedDocument(): Promise<void> {
+    if (Number.isNaN(projectId) || !generatedProposal) {
+      return;
+    }
+
+    try {
+      setError(null);
+      const created = await acceptGeneratedDocumentProposal(projectId, {
+        title: generatedProposal.title.trim(),
+        filename: generatedProposal.filename.trim(),
+        markdown_content: generatedProposal.markdown_content,
+      });
+      await refreshData(projectId);
+      onSelectDocument(created);
+      setGeneratedProposal(null);
+      setGenerationInstruction("");
+      setGenerationTitle("");
+      setGenerationFilename("");
+      setMessage(`Accepted proposal and created ${created.filename}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to accept proposal");
+    }
+  }
+
+  function onDiscardGeneratedDocument(): void {
+    setGeneratedProposal(null);
+    setMessage("Discarded generated proposal.");
   }
 
   async function onOpenSearchResult(result: ProjectSearchResult): Promise<void> {
@@ -594,6 +703,121 @@ export default function ProjectPage() {
         </section>
 
         <aside className={styles.chatPanel}>
+          <section className={styles.generationPanel}>
+            <h3>Generate Document</h3>
+            <form onSubmit={(event) => void onGenerateDocumentProposal(event)} className={styles.generationForm}>
+              <textarea
+                value={generationInstruction}
+                onChange={(event) => setGenerationInstruction(event.target.value)}
+                rows={4}
+                placeholder="Describe the document you want to generate"
+                disabled={generationStreaming}
+              />
+              <input
+                value={generationTitle}
+                onChange={(event) => setGenerationTitle(event.target.value)}
+                placeholder="Optional title"
+                disabled={generationStreaming}
+              />
+              <input
+                value={generationFilename}
+                onChange={(event) => setGenerationFilename(event.target.value)}
+                placeholder="Optional filename (e.g. plan.md)"
+                disabled={generationStreaming}
+              />
+              <label className={styles.generationHintToggle}>
+                <input
+                  type="checkbox"
+                  checked={generationUseSelectedHint}
+                  onChange={(event) => setGenerationUseSelectedHint(event.target.checked)}
+                  disabled={generationStreaming}
+                />
+                Use selected document as context hint
+              </label>
+              <button type="submit" disabled={generationStreaming || !generationInstruction.trim()}>
+                {generationStreaming ? "Generating..." : "Generate"}
+              </button>
+            </form>
+
+            {generatedProposal ? (
+              <section className={styles.generatedDraft}>
+                <p className={styles.generatedBadge}>Draft / Proposed</p>
+                <label>
+                  Title
+                  <input
+                    value={generatedProposal.title}
+                    onChange={(event) =>
+                      setGeneratedProposal((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              title: event.target.value,
+                            }
+                          : prev,
+                      )
+                    }
+                    disabled={generationStreaming}
+                  />
+                </label>
+                <label>
+                  Filename
+                  <input
+                    value={generatedProposal.filename}
+                    onChange={(event) =>
+                      setGeneratedProposal((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              filename: event.target.value,
+                            }
+                          : prev,
+                      )
+                    }
+                    disabled={generationStreaming}
+                  />
+                </label>
+
+                <div className={styles.generatedDraftGrid}>
+                  <div className={styles.generatedEditorPane}>
+                    <h4>Draft Markdown</h4>
+                    <textarea
+                      value={generatedProposal.markdown_content}
+                      onChange={(event) =>
+                        setGeneratedProposal((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                markdown_content: event.target.value,
+                              }
+                            : prev,
+                        )
+                      }
+                      rows={14}
+                      disabled={generationStreaming}
+                    />
+                  </div>
+                  <div className={styles.generatedPreviewPane}>
+                    <h4>Draft Preview</h4>
+                    <div className={styles.markdownPreview}>
+                      <ReactMarkdown>{generatedProposal.markdown_content || "_No content yet._"}</ReactMarkdown>
+                    </div>
+                  </div>
+                </div>
+
+                {generationMeta ? <p className={styles.chatMeta}>{generationMeta}</p> : null}
+
+                <div className={styles.generatedActions}>
+                  <button type="button" onClick={() => void onAcceptGeneratedDocument()} disabled={generationStreaming}>
+                    Accept Document
+                  </button>
+                  <button type="button" onClick={onDiscardGeneratedDocument} disabled={generationStreaming}>
+                    Discard
+                  </button>
+                </div>
+              </section>
+            ) : null}
+          </section>
+
           <div className={styles.chatHeader}>
             <h3>Project Chat</h3>
             <p>{activeConversation?.title ?? "General conversation"}</p>
@@ -632,4 +856,35 @@ export default function ProjectPage() {
       </section>
     </main>
   );
+}
+
+function formatContextDiagnostics(meta: {
+  used_document_ids?: number[];
+  used_document_filenames?: string[];
+  context_documents?: ContextDocumentDiagnostic[];
+  truncated?: boolean;
+}): string | null {
+  const lines: string[] = ["Context:"];
+
+  if (meta.context_documents && meta.context_documents.length > 0) {
+    for (const item of meta.context_documents) {
+      lines.push(`- ${item.filename} - ${item.reason}`);
+    }
+  } else if (meta.used_document_filenames && meta.used_document_filenames.length > 0) {
+    for (const filename of meta.used_document_filenames) {
+      lines.push(`- ${filename}`);
+    }
+  } else if (meta.used_document_ids && meta.used_document_ids.length > 0) {
+    for (const id of meta.used_document_ids) {
+      lines.push(`- ${id}`);
+    }
+  } else if (!meta.truncated) {
+    return null;
+  }
+
+  if (meta.truncated) {
+    lines.push("Context truncated");
+  }
+
+  return lines.join("\n");
 }

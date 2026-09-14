@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.models.document import Document
 from app.models.message import Message
-from app.services.document_references import resolve_explicit_document_ids
+from app.services.document_references import normalize_reference_text, resolve_explicit_document_ids, strip_organizational_prefix
+from app.services.generation_prompt import GENERATION_SYSTEM_PROMPT
 from app.services.llm import LLMChatMessage
 from app.services.search import SearchService
 
@@ -55,6 +56,46 @@ class ContextBuilder:
         conversation_messages: list[Message],
         selected_document_id: int | None = None,
     ) -> BuiltContext:
+        return self._build_context(
+            project_id=project_id,
+            question=user_question,
+            selected_document_id=selected_document_id,
+            history_messages=conversation_messages,
+            system_prompt=SYSTEM_PROMPT,
+            question_label="USER QUESTION",
+            include_history=True,
+        )
+
+    def build_generation(
+        self,
+        project_id: int,
+        instruction: str,
+        selected_document_id: int | None = None,
+        requested_output_filename: str | None = None,
+    ) -> BuiltContext:
+        excluded_explicit_reference_aliases = self._build_excluded_generation_reference_aliases(requested_output_filename)
+        return self._build_context(
+            project_id=project_id,
+            question=instruction,
+            selected_document_id=selected_document_id,
+            history_messages=[],
+            system_prompt=GENERATION_SYSTEM_PROMPT,
+            question_label="USER INSTRUCTION",
+            include_history=False,
+            excluded_explicit_reference_aliases=excluded_explicit_reference_aliases,
+        )
+
+    def _build_context(
+        self,
+        project_id: int,
+        question: str,
+        selected_document_id: int | None,
+        history_messages: list[Message],
+        system_prompt: str,
+        question_label: str,
+        include_history: bool,
+        excluded_explicit_reference_aliases: set[str] | None = None,
+    ) -> BuiltContext:
         docs = (
             self._db.query(Document)
             .filter(Document.project_id == project_id)
@@ -62,39 +103,40 @@ class ContextBuilder:
             .all()
         )
 
-        history_messages = conversation_messages[-self._settings.ai_max_history_messages :]
+        bounded_history = history_messages[-self._settings.ai_max_history_messages :]
 
-        history_block = self._format_history(history_messages)
-        question_block = f"USER QUESTION\n{user_question.strip()}"
+        history_block = self._format_history(bounded_history)
+        question_block = f"{question_label}\n{question.strip()}"
 
-        static_overhead = len(SYSTEM_PROMPT) + len("CONTEXT\n\n") + len(history_block) + len(question_block)
+        static_overhead = len(system_prompt) + len("CONTEXT\n\n") + len(question_block)
+        if include_history:
+            static_overhead += len(history_block)
+
         budget = max(self._settings.ai_max_context_chars, 2000)
         remaining = max(budget - static_overhead, 0)
 
         selected_blocks, used_documents, usage_reasons, truncated = self._choose_document_blocks(
             project_id=project_id,
             documents=docs,
-            user_question=user_question,
+            user_question=question,
             remaining_budget=remaining,
             selected_document_id=selected_document_id,
+            excluded_explicit_reference_aliases=excluded_explicit_reference_aliases,
         )
 
-        context_body = "\n\n".join(
-            [
-                "PROJECT DOCUMENTS",
-                *selected_blocks,
-                "CONVERSATION HISTORY",
-                history_block,
-                question_block,
-            ]
-        )
+        context_parts = ["PROJECT DOCUMENTS", *selected_blocks]
+        if include_history:
+            context_parts.extend(["CONVERSATION HISTORY", history_block])
+        context_parts.append(question_block)
+
+        context_body = "\n\n".join(context_parts)
 
         if truncated:
             context_body += "\n\nNOTE\nSome project documents were omitted to stay within context budget."
 
         return BuiltContext(
             messages=[
-                LLMChatMessage(role="system", content=SYSTEM_PROMPT.strip()),
+                LLMChatMessage(role="system", content=system_prompt.strip()),
                 LLMChatMessage(role="user", content=context_body),
             ],
             used_document_ids=[document.id for document in used_documents],
@@ -110,8 +152,36 @@ class ContextBuilder:
         self,
         documents: list[Document],
         user_question: str,
+        excluded_aliases: set[str] | None = None,
     ) -> list[int]:
-        return resolve_explicit_document_ids(documents=documents, user_question=user_question)
+        explicit_ids = resolve_explicit_document_ids(documents=documents, user_question=user_question)
+        if not excluded_aliases:
+            return explicit_ids
+
+        doc_lookup = {document.id: document for document in documents}
+        filtered_ids: list[int] = []
+        for explicit_id in explicit_ids:
+            document = doc_lookup.get(explicit_id)
+            if document is None:
+                continue
+            normalized_filename = normalize_reference_text(document.filename)
+            normalized_stripped_filename = normalize_reference_text(strip_organizational_prefix(document.filename))
+            if normalized_filename in excluded_aliases or normalized_stripped_filename in excluded_aliases:
+                continue
+            filtered_ids.append(explicit_id)
+
+        return filtered_ids
+
+    def _build_excluded_generation_reference_aliases(self, requested_output_filename: str | None) -> set[str]:
+        if not requested_output_filename:
+            return set()
+
+        excluded_aliases: set[str] = set()
+        for candidate in (requested_output_filename, strip_organizational_prefix(requested_output_filename)):
+            normalized = normalize_reference_text(candidate)
+            if normalized:
+                excluded_aliases.add(normalized)
+        return excluded_aliases
 
     def _extend_unique(self, target: list[int], candidates: list[int]) -> None:
         seen = set(target)
@@ -128,6 +198,7 @@ class ContextBuilder:
         user_question: str,
         remaining_budget: int,
         selected_document_id: int | None,
+        excluded_explicit_reference_aliases: set[str] | None = None,
     ) -> tuple[list[str], list[Document], dict[int, str], bool]:
         all_blocks = [(doc, self._format_document(doc)) for doc in documents]
 
@@ -135,7 +206,11 @@ class ContextBuilder:
         blocks_by_id = {document.id: block for document, block in all_blocks}
 
         selected_ids = [selected_document_id] if selected_document_id in docs_by_id else []
-        explicit_ids = self._find_explicit_document_ids(documents, user_question)
+        explicit_ids = self._find_explicit_document_ids(
+            documents,
+            user_question,
+            excluded_aliases=excluded_explicit_reference_aliases,
+        )
 
         lexical_ids: list[int] = []
         search_results = self._search_service.search(project_id=project_id, query=user_question, limit=10)

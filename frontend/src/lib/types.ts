@@ -68,3 +68,18 @@ export type ChatMessage = {
   content: string;
   created_at: string;
 };
+
+export type ContextDocumentDiagnostic = {
+  filename: string;
+  reason: "selected" | "explicit_reference" | "lexical_search" | "remaining" | string;
+};
+
+export type GeneratedDocumentProposal = {
+  title: string;
+  filename: string;
+  markdown_content: string;
+  used_document_ids: number[];
+  used_document_filenames: string[];
+  context_documents: ContextDocumentDiagnostic[];
+  truncated: boolean;
+};

@@ -303,6 +303,25 @@ def test_explicit_reference_resolves_numeric_prefixed_filename_mention() -> None
         assert int(product["id"]) in context.used_document_ids
 
 
+def test_chat_explicit_reference_includes_same_named_document() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        plan = _create_document(client, project_id, "Phase 5 Plan", "phase-5-plan.md", "existing plan")
+        _create_document(client, project_id, "Product Requirements", "2. product-requirements.md", "req")
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "Please summarize phase-5-plan.md and compare it to product-requirements.md.",
+            )
+
+        assert int(plan["id"]) in context.used_document_ids
+        reason_by_filename = {item["filename"]: item["reason"] for item in context.context_documents}
+        assert reason_by_filename["phase-5-plan.md"] == "explicit_reference"
+
+
 def test_explicit_reference_resolves_case_and_separator_variants() -> None:
     provider = FakeLLMProvider()
     for client, session_factory in _create_test_env(provider):

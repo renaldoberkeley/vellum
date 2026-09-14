@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
@@ -28,6 +28,8 @@ class DocumentVersion(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     change_source: Mapped[str] = mapped_column(String(32), nullable=False)
     change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
 
     document: Mapped["Document"] = relationship("Document", back_populates="versions")

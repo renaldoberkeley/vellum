@@ -221,7 +221,7 @@ export async function listConversationMessages(
 
 type StreamHandlers = {
   onChunk: (chunk: string) => void;
-  onDone?: (meta: { used_document_ids?: number[]; truncated?: boolean }) => void;
+  onDone?: (meta: { used_document_ids?: number[]; used_document_filenames?: string[]; truncated?: boolean }) => void;
 };
 
 export async function streamConversationMessage(
@@ -284,6 +284,7 @@ export async function streamConversationMessage(
         content?: string;
         detail?: string;
         used_document_ids?: number[];
+        used_document_filenames?: string[];
         truncated?: boolean;
       };
 
@@ -296,6 +297,7 @@ export async function streamConversationMessage(
       if (payload.type === "done") {
         handlers.onDone?.({
           used_document_ids: payload.used_document_ids,
+          used_document_filenames: payload.used_document_filenames,
           truncated: payload.truncated,
         });
       }

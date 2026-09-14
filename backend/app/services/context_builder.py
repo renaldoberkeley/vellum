@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -25,6 +26,7 @@ If the provided context is insufficient to answer, say so explicitly.
 class BuiltContext:
     messages: list[LLMChatMessage]
     used_document_ids: list[int]
+    used_document_filenames: list[str]
     truncated: bool
 
 
@@ -53,7 +55,6 @@ class ContextBuilder:
             .all()
         )
 
-        ordered_docs = self._prioritize_documents(docs, selected_document_id)
         history_messages = conversation_messages[-self._settings.ai_max_history_messages :]
 
         history_block = self._format_history(history_messages)
@@ -63,11 +64,12 @@ class ContextBuilder:
         budget = max(self._settings.ai_max_context_chars, 2000)
         remaining = max(budget - static_overhead, 0)
 
-        selected_blocks, used_document_ids = self._choose_document_blocks(
+        selected_blocks, used_documents, truncated = self._choose_document_blocks(
             project_id=project_id,
-            ordered_docs=ordered_docs,
+            documents=docs,
             user_question=user_question,
             remaining_budget=remaining,
+            selected_document_id=selected_document_id,
         )
 
         context_body = "\n\n".join(
@@ -80,7 +82,6 @@ class ContextBuilder:
             ]
         )
 
-        truncated = len(selected_blocks) < len(ordered_docs)
         if truncated:
             context_body += "\n\nNOTE\nSome project documents were omitted to stay within context budget."
 
@@ -89,69 +90,144 @@ class ContextBuilder:
                 LLMChatMessage(role="system", content=SYSTEM_PROMPT.strip()),
                 LLMChatMessage(role="user", content=context_body),
             ],
-            used_document_ids=used_document_ids,
+            used_document_ids=[document.id for document in used_documents],
+            used_document_filenames=[document.filename for document in used_documents],
             truncated=truncated,
         )
 
-    def _prioritize_documents(
+    def _find_explicit_document_ids(
         self,
         documents: list[Document],
-        selected_document_id: int | None,
-    ) -> list[Document]:
-        if selected_document_id is None:
-            return documents
+        user_question: str,
+    ) -> list[int]:
+        normalized_question = _normalize_for_matching(user_question)
+        normalized_question_padded = f" {normalized_question} "
+        lower_question = user_question.lower()
+        explicit_ids: list[int] = []
 
-        selected = [doc for doc in documents if doc.id == selected_document_id]
-        remaining = [doc for doc in documents if doc.id != selected_document_id]
-        return selected + remaining
+        for document in documents:
+            filename = document.filename.strip().lower()
+            title = document.title.strip()
+            normalized_title = _normalize_for_matching(title)
+
+            is_filename_match = bool(filename) and filename in lower_question
+            is_title_match = bool(normalized_title) and f" {normalized_title} " in normalized_question_padded
+            if is_filename_match or is_title_match:
+                explicit_ids.append(document.id)
+
+        return explicit_ids
+
+    def _extend_unique(self, target: list[int], candidates: list[int]) -> None:
+        seen = set(target)
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            target.append(candidate)
+            seen.add(candidate)
 
     def _choose_document_blocks(
         self,
         project_id: int,
-        ordered_docs: list[Document],
+        documents: list[Document],
         user_question: str,
         remaining_budget: int,
-    ) -> tuple[list[str], list[int]]:
-        all_blocks = [(doc, self._format_document(doc)) for doc in ordered_docs]
-        total_size = sum(len(block) for _, block in all_blocks)
+        selected_document_id: int | None,
+    ) -> tuple[list[str], list[Document], bool]:
+        all_blocks = [(doc, self._format_document(doc)) for doc in documents]
 
-        if total_size <= remaining_budget:
-            return [block for _, block in all_blocks], [doc.id for doc, _ in all_blocks]
+        docs_by_id = {document.id: document for document in documents}
+        blocks_by_id = {document.id: block for document, block in all_blocks}
 
-        candidate_ids: list[int] = []
-        if ordered_docs:
-            candidate_ids.append(ordered_docs[0].id)
+        selected_ids = [selected_document_id] if selected_document_id in docs_by_id else []
+        explicit_ids = self._find_explicit_document_ids(documents, user_question)
 
+        lexical_ids: list[int] = []
         search_results = self._search_service.search(project_id=project_id, query=user_question, limit=10)
         for result in search_results:
-            if result.document_id not in candidate_ids:
-                candidate_ids.append(result.document_id)
+            if result.document_id in docs_by_id:
+                lexical_ids.append(result.document_id)
+
+        remaining_ids = [document.id for document in documents]
+
+        mandatory_ids: list[int] = []
+        self._extend_unique(mandatory_ids, selected_ids)
+        self._extend_unique(mandatory_ids, explicit_ids)
+
+        optional_ids: list[int] = []
+        self._extend_unique(optional_ids, lexical_ids)
+        self._extend_unique(optional_ids, remaining_ids)
+        optional_ids = [doc_id for doc_id in optional_ids if doc_id not in mandatory_ids]
 
         selected_blocks: list[str] = []
-        used_ids: list[int] = []
-        current_size = 0
+        used_documents: list[Document] = []
+        used_doc_ids: set[int] = set()
+        truncated = False
+        budget_left = remaining_budget
 
-        docs_by_id = {doc.id: doc for doc in ordered_docs}
-        for doc_id in candidate_ids:
-            doc = docs_by_id.get(doc_id)
-            if doc is None:
+        mandatory_count = len(mandatory_ids)
+        for index, doc_id in enumerate(mandatory_ids):
+            if budget_left <= 0:
+                truncated = True
+                break
+
+            block = blocks_by_id[doc_id]
+            remaining_mandatory = mandatory_count - index - 1
+            max_for_doc = max(budget_left - remaining_mandatory, 1)
+            if mandatory_count > 1:
+                fair_share = max(budget_left // (remaining_mandatory + 1), 1)
+                target_size = min(len(block), fair_share, max_for_doc)
+            else:
+                target_size = min(len(block), max_for_doc)
+
+            block_segment = block[:target_size]
+            if not block_segment:
+                truncated = True
                 continue
-            block = self._format_document(doc)
-            if current_size + len(block) > remaining_budget:
+
+            selected_blocks.append(block_segment)
+            if doc_id not in used_doc_ids:
+                used_documents.append(docs_by_id[doc_id])
+                used_doc_ids.add(doc_id)
+            budget_left -= len(block_segment)
+            if len(block_segment) < len(block):
+                truncated = True
+
+        for doc_id in optional_ids:
+            if budget_left <= 0:
+                truncated = True
+                break
+
+            block = blocks_by_id[doc_id]
+            if len(block) > budget_left:
+                truncated = True
                 continue
+
             selected_blocks.append(block)
-            used_ids.append(doc.id)
-            current_size += len(block)
+            if doc_id not in used_doc_ids:
+                used_documents.append(docs_by_id[doc_id])
+                used_doc_ids.add(doc_id)
+            budget_left -= len(block)
 
-        if not selected_blocks and ordered_docs:
-            first = ordered_docs[0]
-            block = self._format_document(first)
-            truncated_block = block[:remaining_budget]
-            if truncated_block:
-                selected_blocks.append(truncated_block)
-                used_ids.append(first.id)
+        if not used_documents and documents and remaining_budget > 0:
+            fallback_priority = mandatory_ids + optional_ids
+            fallback_id = fallback_priority[0] if fallback_priority else documents[0].id
+            fallback_block = blocks_by_id[fallback_id][:remaining_budget]
+            if fallback_block:
+                selected_blocks.append(fallback_block)
+                used_documents.append(docs_by_id[fallback_id])
+                used_doc_ids.add(fallback_id)
+                if len(fallback_block) < len(blocks_by_id[fallback_id]):
+                    truncated = True
 
-        return selected_blocks, used_ids
+        included_full_document_ids = {
+            document.id
+            for document, block in all_blocks
+            if document.id in used_doc_ids and block in selected_blocks
+        }
+        if len(included_full_document_ids) < len(documents):
+            truncated = True
+
+        return selected_blocks, used_documents, truncated
 
     def _format_document(self, document: Document) -> str:
         return "\n".join(
@@ -169,3 +245,7 @@ class ContextBuilder:
         if not messages:
             return "(no prior messages)"
         return "\n".join(f"{message.role.upper()}: {message.content}" for message in messages)
+
+
+def _normalize_for_matching(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()

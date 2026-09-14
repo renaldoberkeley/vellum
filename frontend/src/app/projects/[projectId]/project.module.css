@@ -383,6 +383,7 @@
 .chatMeta {
   font-size: 0.8rem;
   color: #4b5563;
+  white-space: pre-line;
 }
 
 @media (max-width: 900px) {

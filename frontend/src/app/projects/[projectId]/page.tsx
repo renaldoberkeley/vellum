@@ -376,10 +376,18 @@ export default function ProjectPage() {
             );
           },
           onDone: (meta) => {
-            if (meta.used_document_ids && meta.used_document_ids.length > 0) {
-              setChatMeta(
-                `Context docs: ${meta.used_document_ids.join(", ")}${meta.truncated ? " (truncated)" : ""}`,
-              );
+            if (meta.used_document_filenames && meta.used_document_filenames.length > 0) {
+              const lines = ["Context docs:", ...meta.used_document_filenames];
+              if (meta.truncated) {
+                lines.push("(truncated)");
+              }
+              setChatMeta(lines.join("\n"));
+            } else if (meta.used_document_ids && meta.used_document_ids.length > 0) {
+              const lines = ["Context docs:", ...meta.used_document_ids.map((id) => String(id))];
+              if (meta.truncated) {
+                lines.push("(truncated)");
+              }
+              setChatMeta(lines.join("\n"));
             } else if (meta.truncated) {
               setChatMeta("Context was truncated to fit model budget.");
             }

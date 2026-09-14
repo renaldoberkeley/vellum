@@ -207,6 +207,156 @@ def test_selected_document_preference_when_budget_limited() -> None:
         assert "selected.md" in user_payload
 
 
+def test_explicit_filename_reference_is_included_case_insensitive() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        _create_document(client, project_id, "Product Requirements", "product-requirements.md", "requirements body")
+        _create_document(client, project_id, "General", "general.md", "general body")
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "Can you compare PRODUCT-REQUIREMENTS.MD with anything relevant?",
+            )
+
+        payload = context.messages[1].content
+        assert "product-requirements.md" in payload
+
+
+def test_dogfooding_compare_question_includes_both_referenced_docs() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        product = _create_document(client, project_id, "Product Requirements", "product-requirements.md", "req " * 800)
+        architecture = _create_document(client, project_id, "Technical Architecture", "technical-architecture.md", "arch " * 800)
+        _create_document(client, project_id, "Vision", "vision.md", "vision " * 1200)
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "Compare product-requirements.md against technical-architecture.md.",
+            )
+
+        assert int(product["id"]) in context.used_document_ids
+        assert int(architecture["id"]) in context.used_document_ids
+
+
+def test_selected_document_remains_highest_priority() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        selected = _create_document(client, project_id, "Selected", "selected.md", "selected body " * 600)
+        referenced = _create_document(client, project_id, "Referenced", "referenced.md", "referenced body " * 600)
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "Please compare referenced.md details",
+                selected_document_id=int(selected["id"]),
+            )
+
+        assert context.used_document_ids
+        assert context.used_document_ids[0] == int(selected["id"])
+        assert int(referenced["id"]) in context.used_document_ids
+
+
+def test_explicit_reference_outranks_generic_lexical_results() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        explicit = _create_document(client, project_id, "Architecture", "technical-architecture.md", "commonterm " * 40)
+        lexical = _create_document(client, project_id, "Common", "common.md", "commonterm " * 40)
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "Review technical-architecture.md with commonterm",
+            )
+
+        assert int(explicit["id"]) in context.used_document_ids
+        assert int(lexical["id"]) in context.used_document_ids
+        assert context.used_document_ids.index(int(explicit["id"])) < context.used_document_ids.index(int(lexical["id"]))
+
+
+def test_cross_project_filename_reference_cannot_retrieve_documents() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_a = _create_project(client, "A")
+        project_b = _create_project(client, "B")
+        _create_document(client, project_a, "A Doc", "a.md", "alpha context")
+        _create_document(client, project_b, "Secret", "secret-plan.md", "beta secret content")
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_a,
+                "Compare secret-plan.md and a.md",
+            )
+
+        assert "beta secret content" not in context.messages[1].content
+        assert "secret-plan.md" not in context.used_document_filenames
+
+
+def test_oversized_referenced_document_is_truncated_not_omitted() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        huge = _create_document(client, project_id, "Huge", "huge.md", "X" * 9000)
+        _create_document(client, project_id, "Other", "other.md", "Y" * 1500)
+
+        with session_factory() as db:
+            context = _build_context_for_test(db, project_id, "Summarize huge.md")
+
+        assert int(huge["id"]) in context.used_document_ids
+        assert "huge.md" in context.messages[1].content
+        assert context.truncated is True
+
+
+def test_two_oversized_comparison_documents_both_receive_context() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        first = _create_document(client, project_id, "First", "first.md", "A" * 12000)
+        second = _create_document(client, project_id, "Second", "second.md", "B" * 12000)
+
+        with session_factory() as db:
+            context = _build_context_for_test(db, project_id, "Compare first.md against second.md")
+
+        assert int(first["id"]) in context.used_document_ids
+        assert int(second["id"]) in context.used_document_ids
+        assert context.truncated is True
+
+
+def test_natural_language_fallback_search_matches_terms_not_full_phrase() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        _create_document(
+            client,
+            project_id,
+            "Tech Architecture",
+            "technical-architecture.md",
+            "document retrieval and architecture details",
+        )
+        _create_document(client, project_id, "Random", "random.md", "completely unrelated")
+
+        with session_factory() as db:
+            service = PostgresLexicalSearchService(db)
+            results = service.search(
+                project_id=project_id,
+                query="How does the architecture handle retrieval for project context?",
+                limit=10,
+            )
+
+        assert results
+        assert any(result.filename == "technical-architecture.md" for result in results)
+
+
 def test_send_message_with_valid_selected_document_succeeds() -> None:
     provider = FakeLLMProvider(chunks=["ok"])
     for client, _ in _create_test_env(provider):
@@ -220,7 +370,10 @@ def test_send_message_with_valid_selected_document_succeeds() -> None:
         )
         assert response.status_code == 200
         events = _parse_sse_payloads(response.text)
-        assert any(event.get("type") == "done" for event in events)
+        done_event = next((event for event in events if event.get("type") == "done"), None)
+        assert done_event is not None
+        assert "used_document_ids" in done_event
+        assert "used_document_filenames" in done_event
 
 
 def test_send_message_with_nonexistent_selected_document_returns_404() -> None:

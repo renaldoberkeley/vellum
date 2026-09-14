@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
@@ -23,9 +23,14 @@ class Document(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     markdown_content: Mapped[str] = mapped_column(Text, default="", nullable=False)
     current_version: Mapped[int] = mapped_column(default=1, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
     project: Mapped["Project"] = relationship("Project", back_populates="documents")

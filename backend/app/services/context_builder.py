@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -8,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.models.document import Document
 from app.models.message import Message
+from app.services.document_references import resolve_explicit_document_ids
 from app.services.llm import LLMChatMessage
 from app.services.search import SearchService
 
@@ -27,7 +27,14 @@ class BuiltContext:
     messages: list[LLMChatMessage]
     used_document_ids: list[int]
     used_document_filenames: list[str]
+    context_documents: list[dict[str, str]]
     truncated: bool
+
+
+SELECTION_REASON_SELECTED = "selected"
+SELECTION_REASON_EXPLICIT_REFERENCE = "explicit_reference"
+SELECTION_REASON_LEXICAL_SEARCH = "lexical_search"
+SELECTION_REASON_REMAINING = "remaining"
 
 
 class ContextBuilder:
@@ -64,7 +71,7 @@ class ContextBuilder:
         budget = max(self._settings.ai_max_context_chars, 2000)
         remaining = max(budget - static_overhead, 0)
 
-        selected_blocks, used_documents, truncated = self._choose_document_blocks(
+        selected_blocks, used_documents, usage_reasons, truncated = self._choose_document_blocks(
             project_id=project_id,
             documents=docs,
             user_question=user_question,
@@ -92,6 +99,10 @@ class ContextBuilder:
             ],
             used_document_ids=[document.id for document in used_documents],
             used_document_filenames=[document.filename for document in used_documents],
+            context_documents=[
+                {"filename": document.filename, "reason": usage_reasons.get(document.id, SELECTION_REASON_REMAINING)}
+                for document in used_documents
+            ],
             truncated=truncated,
         )
 
@@ -100,22 +111,7 @@ class ContextBuilder:
         documents: list[Document],
         user_question: str,
     ) -> list[int]:
-        normalized_question = _normalize_for_matching(user_question)
-        normalized_question_padded = f" {normalized_question} "
-        lower_question = user_question.lower()
-        explicit_ids: list[int] = []
-
-        for document in documents:
-            filename = document.filename.strip().lower()
-            title = document.title.strip()
-            normalized_title = _normalize_for_matching(title)
-
-            is_filename_match = bool(filename) and filename in lower_question
-            is_title_match = bool(normalized_title) and f" {normalized_title} " in normalized_question_padded
-            if is_filename_match or is_title_match:
-                explicit_ids.append(document.id)
-
-        return explicit_ids
+        return resolve_explicit_document_ids(documents=documents, user_question=user_question)
 
     def _extend_unique(self, target: list[int], candidates: list[int]) -> None:
         seen = set(target)
@@ -132,7 +128,7 @@ class ContextBuilder:
         user_question: str,
         remaining_budget: int,
         selected_document_id: int | None,
-    ) -> tuple[list[str], list[Document], bool]:
+    ) -> tuple[list[str], list[Document], dict[int, str], bool]:
         all_blocks = [(doc, self._format_document(doc)) for doc in documents]
 
         docs_by_id = {document.id: document for document in documents}
@@ -161,8 +157,22 @@ class ContextBuilder:
         selected_blocks: list[str] = []
         used_documents: list[Document] = []
         used_doc_ids: set[int] = set()
+        usage_reasons: dict[int, str] = {}
         truncated = False
         budget_left = remaining_budget
+
+        selected_id_set = set(selected_ids)
+        explicit_id_set = set(explicit_ids)
+        lexical_id_set = set(lexical_ids)
+
+        def reason_for(doc_id: int) -> str:
+            if doc_id in selected_id_set:
+                return SELECTION_REASON_SELECTED
+            if doc_id in explicit_id_set:
+                return SELECTION_REASON_EXPLICIT_REFERENCE
+            if doc_id in lexical_id_set:
+                return SELECTION_REASON_LEXICAL_SEARCH
+            return SELECTION_REASON_REMAINING
 
         mandatory_count = len(mandatory_ids)
         for index, doc_id in enumerate(mandatory_ids):
@@ -188,6 +198,7 @@ class ContextBuilder:
             if doc_id not in used_doc_ids:
                 used_documents.append(docs_by_id[doc_id])
                 used_doc_ids.add(doc_id)
+                usage_reasons[doc_id] = reason_for(doc_id)
             budget_left -= len(block_segment)
             if len(block_segment) < len(block):
                 truncated = True
@@ -206,6 +217,7 @@ class ContextBuilder:
             if doc_id not in used_doc_ids:
                 used_documents.append(docs_by_id[doc_id])
                 used_doc_ids.add(doc_id)
+                usage_reasons[doc_id] = reason_for(doc_id)
             budget_left -= len(block)
 
         if not used_documents and documents and remaining_budget > 0:
@@ -216,6 +228,7 @@ class ContextBuilder:
                 selected_blocks.append(fallback_block)
                 used_documents.append(docs_by_id[fallback_id])
                 used_doc_ids.add(fallback_id)
+                usage_reasons[fallback_id] = reason_for(fallback_id)
                 if len(fallback_block) < len(blocks_by_id[fallback_id]):
                     truncated = True
 
@@ -227,7 +240,7 @@ class ContextBuilder:
         if len(included_full_document_ids) < len(documents):
             truncated = True
 
-        return selected_blocks, used_documents, truncated
+        return selected_blocks, used_documents, usage_reasons, truncated
 
     def _format_document(self, document: Document) -> str:
         return "\n".join(
@@ -245,7 +258,3 @@ class ContextBuilder:
         if not messages:
             return "(no prior messages)"
         return "\n".join(f"{message.role.upper()}: {message.content}" for message in messages)
-
-
-def _normalize_for_matching(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()

@@ -177,6 +177,7 @@ async def send_conversation_message(
                     "type": "done",
                     "used_document_ids": built_context.used_document_ids,
                     "used_document_filenames": built_context.used_document_filenames,
+                    "context_documents": built_context.context_documents,
                     "truncated": built_context.truncated,
                 }
             )

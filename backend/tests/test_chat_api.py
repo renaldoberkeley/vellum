@@ -14,6 +14,7 @@ from app.main import app
 from app.models.message import Message
 from app.api.routes.chat import get_llm_provider_dependency
 from app.services.context_builder import ContextBuilder
+from app.services.document_references import strip_organizational_prefix
 from app.services.search import PostgresLexicalSearchService
 from app.core.config import Settings
 
@@ -225,6 +226,135 @@ def test_explicit_filename_reference_is_included_case_insensitive() -> None:
         assert "product-requirements.md" in payload
 
 
+def test_reference_prefix_stripping_is_conservative() -> None:
+    assert strip_organizational_prefix("1. vision.md") == "vision.md"
+    assert strip_organizational_prefix("01. vision.md") == "vision.md"
+    assert strip_organizational_prefix("1 - vision.md") == "vision.md"
+    assert strip_organizational_prefix("1_vision.md") == "vision.md"
+    assert strip_organizational_prefix("1-vision.md") == "vision.md"
+    assert strip_organizational_prefix("2024-roadmap.md") == "2024-roadmap.md"
+
+
+def test_explicit_reference_resolves_prefixed_filenames_without_prefix() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        product = _create_document(client, project_id, "Product Requirements", "2. product-requirements.md", "req")
+        architecture = _create_document(
+            client,
+            project_id,
+            "Technical Architecture",
+            "4. technical-architecture.md",
+            "arch",
+        )
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "Compare product-requirements.md against technical-architecture.md.",
+            )
+
+        assert int(product["id"]) in context.used_document_ids
+        assert int(architecture["id"]) in context.used_document_ids
+        reason_by_filename = {item["filename"]: item["reason"] for item in context.context_documents}
+        assert reason_by_filename["2. product-requirements.md"] == "explicit_reference"
+        assert reason_by_filename["4. technical-architecture.md"] == "explicit_reference"
+
+
+def test_explicit_reference_resolves_hyphen_and_space_variants() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        product = _create_document(client, project_id, "Product Requirements", "2. product-requirements.md", "req")
+        architecture = _create_document(
+            client,
+            project_id,
+            "Technical Architecture",
+            "4. technical-architecture.md",
+            "arch",
+        )
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "Compare product requirements with technical architecture.",
+            )
+
+        assert int(product["id"]) in context.used_document_ids
+        assert int(architecture["id"]) in context.used_document_ids
+
+
+def test_explicit_reference_resolves_numeric_prefixed_filename_mention() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        product = _create_document(client, project_id, "Product Requirements", "2. product-requirements.md", "req")
+        _create_document(client, project_id, "Technical Architecture", "4. technical-architecture.md", "arch")
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "What does 2. product-requirements.md say?",
+            )
+
+        assert int(product["id"]) in context.used_document_ids
+
+
+def test_explicit_reference_resolves_case_and_separator_variants() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        product = _create_document(client, project_id, "Product Requirements", "2. product-requirements.md", "req")
+        architecture = _create_document(
+            client,
+            project_id,
+            "Technical Architecture",
+            "4. technical-architecture.md",
+            "arch",
+        )
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "Compare PRODUCT_REQUIREMENTS with Technical-Architecture.",
+            )
+
+        assert int(product["id"]) in context.used_document_ids
+        assert int(architecture["id"]) in context.used_document_ids
+
+
+def test_similar_filename_does_not_match_as_explicit_reference() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        product = _create_document(client, project_id, "Product Requirements", "2. product-requirements.md", "req")
+        _create_document(client, project_id, "Product Requirements V2", "2. product-requirements-v2.md", "req v2")
+        architecture = _create_document(
+            client,
+            project_id,
+            "Technical Architecture",
+            "4. technical-architecture.md",
+            "arch",
+        )
+
+        with session_factory() as db:
+            context = _build_context_for_test(
+                db,
+                project_id,
+                "Compare product requirements with technical architecture.",
+            )
+
+        assert int(product["id"]) in context.used_document_ids
+        assert int(architecture["id"]) in context.used_document_ids
+        reason_by_filename = {item["filename"]: item["reason"] for item in context.context_documents}
+        if "2. product-requirements-v2.md" in reason_by_filename:
+            assert reason_by_filename["2. product-requirements-v2.md"] != "explicit_reference"
+
+
 def test_dogfooding_compare_question_includes_both_referenced_docs() -> None:
     provider = FakeLLMProvider()
     for client, session_factory in _create_test_env(provider):
@@ -332,6 +462,57 @@ def test_two_oversized_comparison_documents_both_receive_context() -> None:
         assert context.truncated is True
 
 
+def test_dogfooding_regression_prefixed_filenames_stay_mandatory_under_budget_pressure() -> None:
+    provider = FakeLLMProvider()
+    for client, session_factory in _create_test_env(provider):
+        project_id = _create_project(client)
+        product = _create_document(
+            client,
+            project_id,
+            "Product Requirements",
+            "2. product-requirements.md",
+            "REQ " * 3000,
+        )
+        architecture = _create_document(
+            client,
+            project_id,
+            "Technical Architecture",
+            "4. technical-architecture.md",
+            "ARCH " * 3000,
+        )
+        unrelated = _create_document(
+            client,
+            project_id,
+            "Injection",
+            "zzz-injection.md",
+            "architecture architecture architecture " * 3000,
+        )
+
+        with session_factory() as db:
+            builder = ContextBuilder(
+                db=db,
+                settings=_chat_settings(context_chars=2200),
+                search_service=PostgresLexicalSearchService(db),
+            )
+            context = builder.build(
+                project_id=project_id,
+                user_question="Compare product-requirements.md against technical-architecture.md.",
+                conversation_messages=[],
+            )
+
+        assert int(product["id"]) in context.used_document_ids
+        assert int(architecture["id"]) in context.used_document_ids
+        assert "2. product-requirements.md" in context.used_document_filenames
+        assert "4. technical-architecture.md" in context.used_document_filenames
+        assert context.truncated is True
+
+        reason_by_filename = {item["filename"]: item["reason"] for item in context.context_documents}
+        assert reason_by_filename["2. product-requirements.md"] == "explicit_reference"
+        assert reason_by_filename["4. technical-architecture.md"] == "explicit_reference"
+        assert "zzz-injection.md" not in context.used_document_filenames
+        assert int(unrelated["id"]) not in context.used_document_ids
+
+
 def test_natural_language_fallback_search_matches_terms_not_full_phrase() -> None:
     provider = FakeLLMProvider()
     for client, session_factory in _create_test_env(provider):
@@ -374,6 +555,36 @@ def test_send_message_with_valid_selected_document_succeeds() -> None:
         assert done_event is not None
         assert "used_document_ids" in done_event
         assert "used_document_filenames" in done_event
+        assert "context_documents" in done_event
+
+
+def test_done_event_includes_explicit_reference_reasons() -> None:
+    provider = FakeLLMProvider(chunks=["ok"])
+    for client, _ in _create_test_env(provider):
+        project_id = _create_project(client)
+        _create_document(client, project_id, "Product Requirements", "2. product-requirements.md", "req " * 600)
+        _create_document(client, project_id, "Technical Architecture", "4. technical-architecture.md", "arch " * 600)
+        conversation_id = _create_conversation(client, project_id)
+
+        response = client.post(
+            f"/api/projects/{project_id}/conversations/{conversation_id}/messages",
+            json={"content": "Compare product-requirements.md against technical-architecture.md."},
+        )
+        assert response.status_code == 200
+
+        events = _parse_sse_payloads(response.text)
+        done_event = next((event for event in events if event.get("type") == "done"), None)
+        assert done_event is not None
+
+        context_documents = done_event.get("context_documents")
+        assert isinstance(context_documents, list)
+        reason_by_filename = {
+            item["filename"]: item["reason"]
+            for item in context_documents
+            if isinstance(item, dict)
+        }
+        assert reason_by_filename.get("2. product-requirements.md") == "explicit_reference"
+        assert reason_by_filename.get("4. technical-architecture.md") == "explicit_reference"
 
 
 def test_send_message_with_nonexistent_selected_document_returns_404() -> None:

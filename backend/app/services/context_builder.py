@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.models.document import Document
 from app.models.message import Message
+from app.services.edit_prompt import EDIT_SYSTEM_PROMPT
 from app.services.document_references import normalize_reference_text, resolve_explicit_document_ids, strip_organizational_prefix
 from app.services.generation_prompt import GENERATION_SYSTEM_PROMPT
 from app.services.llm import LLMChatMessage
@@ -83,6 +84,22 @@ class ContextBuilder:
             question_label="USER INSTRUCTION",
             include_history=False,
             excluded_explicit_reference_aliases=excluded_explicit_reference_aliases,
+        )
+
+    def build_edit(
+        self,
+        project_id: int,
+        instruction: str,
+        target_document_id: int,
+    ) -> BuiltContext:
+        return self._build_context(
+            project_id=project_id,
+            question=instruction,
+            selected_document_id=target_document_id,
+            history_messages=[],
+            system_prompt=EDIT_SYSTEM_PROMPT,
+            question_label="USER EDIT INSTRUCTION",
+            include_history=False,
         )
 
     def _build_context(

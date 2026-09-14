@@ -12,3 +12,13 @@ class AcceptGeneratedDocumentRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     filename: str = Field(min_length=1, max_length=255)
     markdown_content: str
+
+
+class ProposeDocumentEditRequest(BaseModel):
+    instruction: str = Field(min_length=1)
+
+
+class AcceptDocumentEditRequest(BaseModel):
+    base_version: int = Field(ge=1)
+    markdown_content: str
+    instruction: str | None = Field(default=None, min_length=1)

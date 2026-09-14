@@ -225,14 +225,51 @@ type StreamHandlers = {
   onDone?: (meta: StreamDoneMeta) => void;
 };
 
+export class StreamError extends Error {
+  code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 type StreamDoneMeta = {
   title?: string;
   filename?: string;
+  document_id?: number;
+  base_version?: number;
   used_document_ids?: number[];
   used_document_filenames?: string[];
   context_documents?: ContextDocumentDiagnostic[];
   truncated?: boolean;
 };
+
+type StreamSsePayload = {
+  type?: string;
+  content?: string;
+  code?: string;
+  detail?: string;
+  title?: string;
+  filename?: string;
+  document_id?: number;
+  base_version?: number;
+  used_document_ids?: number[];
+  used_document_filenames?: string[];
+  context_documents?: ContextDocumentDiagnostic[];
+  truncated?: boolean;
+};
+
+export function parseSseMessageEvent(event: string): StreamSsePayload | null {
+  const dataLine = event
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("data:"));
+  if (!dataLine) {
+    return null;
+  }
+  return JSON.parse(dataLine.slice(5).trim()) as StreamSsePayload;
+}
 
 async function streamSseRequest(
   input: RequestInfo | URL,
@@ -273,36 +310,23 @@ async function streamSseRequest(
     buffer = events.pop() ?? "";
 
     for (const event of events) {
-      const dataLine = event
-        .split("\n")
-        .map((line) => line.trim())
-        .find((line) => line.startsWith("data:"));
-      if (!dataLine) {
+        const payload = parseSseMessageEvent(event);
+        if (!payload) {
         continue;
       }
-
-      const payload = JSON.parse(dataLine.slice(5).trim()) as {
-        type?: string;
-        content?: string;
-        detail?: string;
-        title?: string;
-        filename?: string;
-        used_document_ids?: number[];
-        used_document_filenames?: string[];
-        context_documents?: ContextDocumentDiagnostic[];
-        truncated?: boolean;
-      };
 
       if (payload.type === "chunk" && payload.content) {
         handlers.onChunk(payload.content);
       }
       if (payload.type === "error") {
-        throw new Error(payload.detail ?? "Streaming failed");
+          throw new StreamError(payload.detail ?? "Streaming failed", payload.code);
       }
       if (payload.type === "done") {
         handlers.onDone?.({
           title: payload.title,
           filename: payload.filename,
+            document_id: payload.document_id,
+            base_version: payload.base_version,
           used_document_ids: payload.used_document_ids,
           used_document_filenames: payload.used_document_filenames,
           context_documents: payload.context_documents,
@@ -356,6 +380,36 @@ export async function acceptGeneratedDocumentProposal(
   input: { title: string; filename: string; markdown_content: string },
 ): Promise<Document> {
   const response = await fetch(`${API_BASE}/api/projects/${projectId}/ai/generated-document/accept`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return parseResponse<Document>(response);
+}
+
+export async function streamProposeDocumentEdit(
+  projectId: number,
+  documentId: number,
+  input: { instruction: string },
+  handlers: StreamHandlers,
+): Promise<void> {
+  await streamSseRequest(
+    `${API_BASE}/api/projects/${projectId}/documents/${documentId}/ai/propose-edit`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+    handlers,
+  );
+}
+
+export async function acceptDocumentEditProposal(
+  projectId: number,
+  documentId: number,
+  input: { base_version: number; markdown_content: string; instruction?: string },
+): Promise<Document> {
+  const response = await fetch(`${API_BASE}/api/projects/${projectId}/documents/${documentId}/ai/accept-edit`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),

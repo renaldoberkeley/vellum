@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     ai_max_context_chars: int = 24_000
     ai_max_history_messages: int = 16
     ai_max_output_tokens: int = 700
+    ai_edit_max_output_tokens: int = 7_500
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

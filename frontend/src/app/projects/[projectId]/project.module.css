@@ -309,6 +309,122 @@
   gap: 8px;
 }
 
+.editPanel {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editPanel h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.editTarget {
+  font-size: 0.82rem;
+  color: #4b5563;
+}
+
+.editForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editForm textarea,
+.editForm button {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 9px;
+  font: inherit;
+}
+
+.editForm button {
+  width: fit-content;
+  background: #111827;
+  color: #fff;
+  border-color: #111827;
+}
+
+.editDraft {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editVersion {
+  font-size: 0.82rem;
+  color: #4b5563;
+}
+
+.editIncomplete {
+  font-size: 0.82rem;
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.editReviewGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.editReviewPane {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.editReviewPane h4 {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.editReviewPane textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+  resize: vertical;
+  min-height: 180px;
+}
+
+.diffBlock {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.diffAdded {
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.diffRemoved {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.diffUnchanged {
+  color: #374151;
+}
+
 .generationPanel h3 {
   font-size: 0.95rem;
   font-weight: 600;
@@ -526,6 +642,10 @@
   }
 
   .generatedDraftGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .editReviewGrid {
     grid-template-columns: 1fr;
   }
 }

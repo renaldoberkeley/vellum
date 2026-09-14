@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  acceptDocumentEditProposal,
   acceptGeneratedDocumentProposal,
   createProjectConversation,
   createDocument,
@@ -21,13 +22,23 @@ import {
   restoreDocumentVersion,
   searchProjectDocuments,
   streamGenerateDocumentProposal,
+  streamProposeDocumentEdit,
+  StreamError,
   streamConversationMessage,
   updateDocument,
 } from "@/lib/api";
+import {
+  applyEditProposalChunk,
+  applyEditProposalDone,
+  applyEditProposalError,
+  canAcceptEditProposal as canAcceptEditProposalState,
+  createInitialEditProposal,
+} from "@/lib/editProposalState";
 import type {
   ChatMessage,
   ContextDocumentDiagnostic,
   Conversation,
+  DocumentEditProposal,
   Document,
   DocumentVersion,
   DocumentVersionListItem,
@@ -67,6 +78,9 @@ export default function ProjectPage() {
   const [generationUseSelectedHint, setGenerationUseSelectedHint] = useState(false);
   const [generationStreaming, setGenerationStreaming] = useState(false);
   const [generatedProposal, setGeneratedProposal] = useState<GeneratedDocumentProposal | null>(null);
+  const [editInstruction, setEditInstruction] = useState("");
+  const [editStreaming, setEditStreaming] = useState(false);
+  const [editProposal, setEditProposal] = useState<DocumentEditProposal | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -94,6 +108,24 @@ export default function ProjectPage() {
     });
   }, [generatedProposal]);
 
+  const editMeta = useMemo(() => {
+    if (!editProposal) {
+      return null;
+    }
+
+    return formatContextDiagnostics({
+      used_document_ids: editProposal.used_document_ids,
+      used_document_filenames: editProposal.used_document_filenames,
+      context_documents: editProposal.context_documents,
+      truncated: editProposal.truncated,
+    });
+  }, [editProposal]);
+
+  const canAcceptEditProposal = useMemo(
+    () => canAcceptEditProposalState(editProposal, editStreaming),
+    [editProposal, editStreaming],
+  );
+
   const loadVersionHistory = useCallback(
     async (targetDocumentId: number): Promise<void> => {
       if (Number.isNaN(projectId)) {
@@ -119,6 +151,8 @@ export default function ProjectPage() {
       setInspectedVersion(null);
       setMessage(null);
       setImportFailures([]);
+      setEditProposal(null);
+      setEditInstruction("");
       void loadVersionHistory(document.id).catch((err: unknown) => {
         setError(err instanceof Error ? err.message : "Failed to load version history");
       });
@@ -516,6 +550,88 @@ export default function ProjectPage() {
     setMessage("Discarded generated proposal.");
   }
 
+  async function onProposeEdit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (Number.isNaN(projectId) || !selectedDocument) {
+      return;
+    }
+
+    const instruction = editInstruction.trim();
+    if (!instruction) {
+      setError("AI edit instruction cannot be empty");
+      return;
+    }
+
+    try {
+      setError(null);
+      setMessage(null);
+      setEditStreaming(true);
+      setEditProposal(createInitialEditProposal(selectedDocument, instruction));
+
+      await streamProposeDocumentEdit(
+        projectId,
+        selectedDocument.id,
+        { instruction },
+        {
+          onChunk: (chunk) => {
+            setEditProposal((prev) =>
+              prev
+                ? applyEditProposalChunk(prev, chunk)
+                : prev,
+            );
+          },
+          onDone: (meta) => {
+            setEditProposal((prev) =>
+              prev
+                ? applyEditProposalDone(prev, meta)
+                : prev,
+            );
+          },
+        },
+      );
+    } catch (err) {
+      const streamError = err instanceof StreamError ? err : null;
+      const detail = streamError?.message ?? (err instanceof Error ? err.message : "Failed to generate edit proposal");
+      const errorCode = streamError?.code;
+
+      setError(detail);
+      setEditProposal((prev) =>
+        prev
+          ? applyEditProposalError(prev, { code: errorCode, detail })
+          : prev,
+      );
+    } finally {
+      setEditStreaming(false);
+    }
+  }
+
+  async function onAcceptEditProposal(): Promise<void> {
+    if (Number.isNaN(projectId) || !selectedDocument || !editProposal) {
+      return;
+    }
+
+    try {
+      setError(null);
+      const updated = await acceptDocumentEditProposal(projectId, selectedDocument.id, {
+        base_version: editProposal.base_version,
+        markdown_content: editProposal.proposed_markdown_content,
+        instruction: editProposal.instruction,
+      });
+      await refreshData(projectId);
+      onSelectDocument(updated);
+      setEditProposal(null);
+      setEditInstruction("");
+      setMessage(`Accepted AI edit for ${updated.filename}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to accept edit proposal");
+    }
+  }
+
+  function onDiscardEditProposal(): void {
+    setEditProposal(null);
+    setMessage("Discarded AI edit proposal.");
+  }
+
   async function onOpenSearchResult(result: ProjectSearchResult): Promise<void> {
     if (Number.isNaN(projectId)) {
       return;
@@ -703,6 +819,98 @@ export default function ProjectPage() {
         </section>
 
         <aside className={styles.chatPanel}>
+          <section className={styles.editPanel}>
+            <h3>AI Edit Selected Document</h3>
+            {selectedDocument ? <p className={styles.editTarget}>Target: {selectedDocument.filename}</p> : null}
+            <form onSubmit={(event) => void onProposeEdit(event)} className={styles.editForm}>
+              <textarea
+                value={editInstruction}
+                onChange={(event) => setEditInstruction(event.target.value)}
+                rows={4}
+                placeholder="Describe the change to apply to the selected document"
+                disabled={editStreaming || !selectedDocument}
+              />
+              <button type="submit" disabled={editStreaming || !selectedDocument || !editInstruction.trim()}>
+                {editStreaming ? "Generating Edit..." : "Generate Proposal"}
+              </button>
+            </form>
+
+            {editProposal ? (
+              <section className={styles.editDraft}>
+                <p className={styles.generatedBadge}>Draft / Proposed Edit</p>
+                <p className={styles.editVersion}>Base version: v{editProposal.base_version}</p>
+                {editProposal.status === "incomplete" ? (
+                  <p className={styles.editIncomplete}>Incomplete proposal: output exceeded model limit. Regenerate before accepting.</p>
+                ) : null}
+                {editProposal.status === "error" && editProposal.error_detail ? (
+                  <p className={styles.editIncomplete}>Proposal failed: {editProposal.error_detail}</p>
+                ) : null}
+
+                <div className={styles.editReviewGrid}>
+                  <div className={styles.editReviewPane}>
+                    <h4>Current Content</h4>
+                    <div className={styles.markdownPreview}>
+                      <ReactMarkdown>{editProposal.current_markdown_content || "_No content yet._"}</ReactMarkdown>
+                    </div>
+                  </div>
+
+                  <div className={styles.editReviewPane}>
+                    <h4>Proposed Content</h4>
+                    <textarea
+                      value={editProposal.proposed_markdown_content}
+                      onChange={(event) =>
+                        setEditProposal((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                proposed_markdown_content: event.target.value,
+                              }
+                            : prev,
+                        )
+                      }
+                      rows={14}
+                      disabled={editStreaming}
+                    />
+                  </div>
+
+                  <div className={styles.editReviewPane}>
+                    <h4>Line Diff</h4>
+                    <pre className={styles.diffBlock}>
+                      {buildLineDiff(editProposal.current_markdown_content, editProposal.proposed_markdown_content).map(
+                        (line, index) => (
+                          <div
+                            key={`${line.type}-${index}-${line.content}`}
+                            className={
+                              line.type === "added"
+                                ? styles.diffAdded
+                                : line.type === "removed"
+                                  ? styles.diffRemoved
+                                  : styles.diffUnchanged
+                            }
+                          >
+                            {line.type === "added" ? "+ " : line.type === "removed" ? "- " : "  "}
+                            {line.content || " "}
+                          </div>
+                        ),
+                      )}
+                    </pre>
+                  </div>
+                </div>
+
+                {editMeta ? <p className={styles.chatMeta}>{editMeta}</p> : null}
+
+                <div className={styles.generatedActions}>
+                  <button type="button" onClick={() => void onAcceptEditProposal()} disabled={!canAcceptEditProposal}>
+                    Accept Changes
+                  </button>
+                  <button type="button" onClick={onDiscardEditProposal} disabled={editStreaming}>
+                    Discard
+                  </button>
+                </div>
+              </section>
+            ) : null}
+          </section>
+
           <section className={styles.generationPanel}>
             <h3>Generate Document</h3>
             <form onSubmit={(event) => void onGenerateDocumentProposal(event)} className={styles.generationForm}>
@@ -887,4 +1095,55 @@ function formatContextDiagnostics(meta: {
   }
 
   return lines.join("\n");
+}
+
+type DiffLine = {
+  type: "unchanged" | "added" | "removed";
+  content: string;
+};
+
+function buildLineDiff(previousText: string, nextText: string): DiffLine[] {
+  const previousLines = previousText.split("\n");
+  const nextLines = nextText.split("\n");
+  const dp: number[][] = Array.from({ length: previousLines.length + 1 }, () =>
+    Array.from({ length: nextLines.length + 1 }, () => 0),
+  );
+
+  for (let i = previousLines.length - 1; i >= 0; i -= 1) {
+    for (let j = nextLines.length - 1; j >= 0; j -= 1) {
+      if (previousLines[i] === nextLines[j]) {
+        dp[i][j] = dp[i + 1][j + 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+  }
+
+  const result: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < previousLines.length && j < nextLines.length) {
+    if (previousLines[i] === nextLines[j]) {
+      result.push({ type: "unchanged", content: previousLines[i] });
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      result.push({ type: "removed", content: previousLines[i] });
+      i += 1;
+    } else {
+      result.push({ type: "added", content: nextLines[j] });
+      j += 1;
+    }
+  }
+
+  while (i < previousLines.length) {
+    result.push({ type: "removed", content: previousLines[i] });
+    i += 1;
+  }
+  while (j < nextLines.length) {
+    result.push({ type: "added", content: nextLines[j] });
+    j += 1;
+  }
+
+  return result;
 }

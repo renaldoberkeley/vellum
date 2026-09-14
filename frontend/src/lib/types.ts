@@ -83,3 +83,19 @@ export type GeneratedDocumentProposal = {
   context_documents: ContextDocumentDiagnostic[];
   truncated: boolean;
 };
+
+export type DocumentEditProposal = {
+  document_id: number;
+  base_version: number;
+  current_markdown_content: string;
+  proposed_markdown_content: string;
+  used_document_ids: number[];
+  used_document_filenames: string[];
+  context_documents: ContextDocumentDiagnostic[];
+  truncated: boolean;
+  instruction: string;
+  done_received: boolean;
+  status: "streaming" | "complete" | "incomplete" | "error";
+  error_code?: string;
+  error_detail?: string;
+};
